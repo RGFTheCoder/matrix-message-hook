@@ -188,6 +188,10 @@ impl HookClients {
         // joins. Sync once first so the client learns about the invite.
         self.ensure_joined(hook, &client).await;
 
+        // Self-sign this device via cross-signing so recipients don't flag the
+        // hook's messages as "encrypted by a device not verified by its owner".
+        ensure_cross_signing(&client, &hook.sender).await;
+
         let ready = AtomicBool::new(self.is_ready(hook, &client).await);
         if !ready.load(Ordering::Relaxed) {
             tracing::warn!("hook {} not yet in an encrypted room; will retry on delivery", hook.id);
@@ -328,5 +332,33 @@ impl HookClients {
             hc.abort().await;
         }
         let _ = std::fs::remove_dir_all(self.store_dir(&hook.id));
+    }
+}
+
+/// Give the hook user a cross-signing identity (if it lacks one) and self-sign
+/// this device, so recipients see the messages as coming from a device the
+/// owner has verified (clearing the "not verified by its owner" shield).
+///
+/// Appservice users have no password, so the initial cross-signing key upload
+/// relies on the homeserver allowing it without User-Interactive Auth
+/// (Synapse's MSC3967 support). Best-effort: on failure we log and carry on —
+/// delivery still works, the shield just remains.
+async fn ensure_cross_signing(client: &Client, sender: &str) {
+    if let Err(e) = client
+        .encryption()
+        .bootstrap_cross_signing_if_needed(None)
+        .await
+    {
+        tracing::warn!("cross-signing bootstrap for {sender} skipped: {e}");
+        return;
+    }
+    match client.encryption().get_own_device().await {
+        Ok(Some(device)) if !device.is_verified_with_cross_signing() => {
+            if let Err(e) = device.verify().await {
+                tracing::warn!("self-signing device for {sender} failed: {e}");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("loading own device for {sender} failed: {e}"),
     }
 }

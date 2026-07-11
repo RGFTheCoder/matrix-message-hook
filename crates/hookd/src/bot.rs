@@ -62,6 +62,12 @@ async fn on_message(
     if Some(ev.sender.as_ref()) == client.user_id() {
         return;
     }
+    // Ignore messages from per-hook `@hook_*` users — those are webhook
+    // deliveries, not commands (otherwise we'd reply "I didn't understand that"
+    // to every alert).
+    if ev.sender.localpart().starts_with("hook_") {
+        return;
+    }
     // Only handle plain text.
     let MessageType::Text(text) = ev.content.msgtype else {
         return;
