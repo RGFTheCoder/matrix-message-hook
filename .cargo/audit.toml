@@ -1,0 +1,8 @@
+# Doesn't work in the sandbox
+[yanked]
+enabled = false      # Warn for yanked crates in Cargo.lock (default: true)
+update_index = false # Auto-update the crates.io index (default: true)
+
+[advisories]
+# Transitive advisories with no available fix (mirrors deny.toml).
+ignore = ["RUSTSEC-2026-0173", "RUSTSEC-2023-0071", "RUSTSEC-2025-0141"]

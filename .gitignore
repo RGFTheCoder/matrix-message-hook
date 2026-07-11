@@ -1,0 +1,20 @@
+# Build artifacts
+/target
+result*
+
+# Bot credentials (homeserver/user/token/device_id). Never commit.
+.env
+crates/*/.env
+
+# Persistent matrix-sdk crypto/state store (E2EE identity + room keys).
+/store
+store/
+crates/*/store/
+*.sqlite
+*.sqlite-*
+
+# Embedded SurrealDB hook store.
+/data
+data/
+*.db
+*.db-*

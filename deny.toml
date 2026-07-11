@@ -1,0 +1,35 @@
+[bans]
+multiple-versions = 'allow'
+
+[licenses]
+private = { ignore = true }
+# Permissive / weak-copyleft licenses pulled in transitively by matrix-sdk,
+# surrealdb, and their dependencies.
+allow = [
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+# SurrealDB and its first-party sub-crates are BUSL-1.1 (source-available, not
+# OSI-approved). Accepted ONLY for the SurrealDB crates, never globally.
+exceptions = [
+  { name = "surrealdb", allow = ["BUSL-1.1"] },
+  { name = "surrealdb-core", allow = ["BUSL-1.1"] },
+  { name = "surrealdb-protocol", allow = ["BUSL-1.1"] },
+  { name = "surrealdb-types", allow = ["BUSL-1.1"] },
+  { name = "surrealdb-types-derive", allow = ["BUSL-1.1"] },
+]
+
+[advisories]
+# Transitive, no patched version available; tracked and removed when upstream
+# deps drop them (see the sibling matrix workspace for the same set).
+ignore = ["RUSTSEC-2026-0173", "RUSTSEC-2023-0071", "RUSTSEC-2025-0141"]

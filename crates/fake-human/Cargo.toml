@@ -1,0 +1,16 @@
+[package]
+name = "fake-human"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+hook-core = { path = "../hook-core" }
+matrix-sdk = { version = "0.18.0", features = ["bundled-sqlite"] }
+my-workspace-hack = { version = "0.1", path = "../my-workspace-hack" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

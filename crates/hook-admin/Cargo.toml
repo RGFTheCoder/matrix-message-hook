@@ -1,0 +1,13 @@
+[package]
+name = "hook-admin"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+hook-core = { path = "../hook-core" }
+my-workspace-hack = { version = "0.1", path = "../my-workspace-hack" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

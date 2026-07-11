@@ -1,0 +1,26 @@
+[package]
+name = "hook-core"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+dotenvy = "0.15"
+hex = "0.4"
+hmac = "0.12"
+matrix-sdk = { version = "0.18.0", features = ["bundled-sqlite", "markdown"] }
+my-workspace-hack = { version = "0.1", path = "../my-workspace-hack" }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+surrealdb = { version = "3", default-features = false, features = ["protocol-ws", "rustls", "kv-mem"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

@@ -1,0 +1,15 @@
+[package]
+name = "hookd"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+hook-core = { path = "../hook-core" }
+matrix-sdk = { version = "0.18.0", features = ["markdown"] }
+my-workspace-hack = { version = "0.1", path = "../my-workspace-hack" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
