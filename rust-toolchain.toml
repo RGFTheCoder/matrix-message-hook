@@ -1,0 +1,10 @@
+# Pinned Rust toolchain (single source of truth for nix + rustup + rust-analyzer).
+#
+# 1.95.0 is the version that compiles the surrealdb 3.x dependency tree here: new
+# enough for edition-2024 + stable AVX-512 std::arch intrinsics (diskann) and the
+# tree's MSRV (tonic 1.88), while still bundling an LLVM (20) that can lower the
+# `llvm.x86.avx512.vpdpwssd.512` intrinsic the newer default rustc/LLVM cannot.
+[toolchain]
+channel = "1.95.0"
+profile = "default"
+components = ["rustfmt", "clippy"]

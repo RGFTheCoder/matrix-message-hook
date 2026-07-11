@@ -51,10 +51,15 @@
         # real LLVM (20) that can lower `llvm.x86.avx512.vpdpwssd.512` — unlike
         # this environment's default nixpkgs rustc/LLVM, which cannot. rustc uses
         # its OWN bundled LLVM for codegen (system clang is only the linker), so
-        # pinning rustc is what fixes the backend. Pinned exact for reproducibility.
-        rustToolchain = pkgs.rust-bin.stable."1.95.0".default;
-
-        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        # pinning rustc is what fixes the backend.
+        #
+        # The exact version lives in `rust-toolchain.toml` (crane's recommended
+        # pin), so rustup/cargo/rust-analyzer and this nix build all agree. We
+        # extend only crane's toolchain scope (the closure form of
+        # `overrideToolchain`), not the whole `pkgs`.
+        craneLib = (crane.mkLib pkgs).overrideToolchain (
+          p: p.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml
+        );
         src = craneLib.cleanCargoSource ./.;
 
         # Common arguments can be set here to avoid repeating them later
