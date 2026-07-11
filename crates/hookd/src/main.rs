@@ -37,15 +37,9 @@ async fn main() -> Result<()> {
     let cfg = Arc::new(Config::from_env()?);
     tracing::info!(user = %cfg.user_id, bind = %cfg.bind_addr, "starting hookd");
 
-    let store = Store::connect(
-        &cfg.surreal_url,
-        &cfg.db_namespace,
-        &cfg.db_name,
-        &cfg.surreal_user,
-        &cfg.surreal_pass,
-    )
-    .await
-    .context("connecting to SurrealDB")?;
+    let store = connect_store_with_retry(&cfg)
+        .await
+        .context("connecting to SurrealDB")?;
     let client = hook_core::client::connect(&cfg)
         .await
         .context("connecting matrix client")?;
@@ -92,4 +86,33 @@ async fn main() -> Result<()> {
         _ = sync_task => tracing::error!("sync task ended; shutting down"),
     }
     Ok(())
+}
+
+/// Connect to SurrealDB, retrying with backoff. The service starts alongside the
+/// SurrealDB container (systemd ordering can't guarantee the DB *inside* it is
+/// listening yet), so a few transient "connection refused" attempts are normal
+/// and shouldn't fail the unit.
+async fn connect_store_with_retry(cfg: &Config) -> Result<Store> {
+    let mut delay = std::time::Duration::from_secs(1);
+    let mut last_err = None;
+    for attempt in 1..=12 {
+        match Store::connect(
+            &cfg.surreal_url,
+            &cfg.db_namespace,
+            &cfg.db_name,
+            &cfg.surreal_user,
+            &cfg.surreal_pass,
+        )
+        .await
+        {
+            Ok(store) => return Ok(store),
+            Err(e) => {
+                tracing::warn!("SurrealDB connect attempt {attempt}/12 failed: {e}");
+                last_err = Some(e);
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(std::time::Duration::from_secs(10));
+            }
+        }
+    }
+    Err(last_err.unwrap()).context("SurrealDB unreachable after retries")
 }

@@ -1,0 +1,4 @@
+#V2
+SELECT count() FROM hook GROUP ALL;
+DELETE hook;
+SELECT count() FROM hook GROUP ALL;
