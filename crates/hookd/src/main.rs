@@ -62,29 +62,30 @@ async fn main() -> Result<()> {
     }
     bot::join_pending_invites(&client).await;
 
-    // Continuous sync in the background (drives E2EE + inbound messages).
+    // Continuous sync in the background. RETRY on error — a transient homeserver
+    // outage (e.g. Synapse restarting to pick up config) must NOT take hookd
+    // down. This loop never returns, so it can't trigger a shutdown.
     let sync_client = client.clone();
-    let sync_task = tokio::spawn(async move {
-        if let Err(e) = sync_client.sync(SyncSettings::default()).await {
-            tracing::error!("matrix sync loop exited: {e}");
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = sync_client.sync(SyncSettings::default()).await {
+                tracing::warn!("matrix sync errored, retrying in 5s: {e}");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
         }
     });
 
     // Bring up the per-hook E2EE clients (each spawned; non-blocking).
     hook_clients.start_all().await;
 
-    // Serve the webhost on the main task.
+    // Serve the webhost on the main task. Only a webhost failure ends the
+    // process (with an error, so systemd's Restart=on-failure applies).
     let app = web::router(web::WebState::new(store, hook_clients, cfg.clone()));
     let listener = TcpListener::bind(&cfg.bind_addr)
         .await
         .with_context(|| format!("binding {}", cfg.bind_addr))?;
     tracing::info!("webhost listening on {}", cfg.bind_addr);
-    let serve = axum::serve(listener, app);
-
-    tokio::select! {
-        r = serve => r.context("webhost error")?,
-        _ = sync_task => tracing::error!("sync task ended; shutting down"),
-    }
+    axum::serve(listener, app).await.context("webhost error")?;
     Ok(())
 }
 

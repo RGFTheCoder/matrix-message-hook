@@ -198,11 +198,15 @@ impl HookClients {
         }
 
         // Continuous sync in the background (drives key sharing + delivery).
+        // Retry on error so a transient homeserver outage doesn't kill the loop.
         let sync_client = client.clone();
         let hid = hook.id.clone();
         let sync_task = tokio::spawn(async move {
-            if let Err(e) = sync_client.sync(SyncSettings::default()).await {
-                tracing::warn!("hook {hid} sync loop exited: {e}");
+            loop {
+                if let Err(e) = sync_client.sync(SyncSettings::default()).await {
+                    tracing::warn!("hook {hid} sync errored, retrying in 5s: {e}");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
             }
         });
 
