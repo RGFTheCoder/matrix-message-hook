@@ -83,6 +83,35 @@ pub async fn restore(
     Ok(client)
 }
 
+/// Give this client's account a cross-signing identity (if it lacks one) and
+/// self-sign the current device, so recipients see messages as coming from a
+/// device the account owner has verified (clearing Element's "Encrypted by a
+/// device not verified by its owner" shield).
+///
+/// Works for both password-holding accounts and passwordless appservice ghosts,
+/// as long as the homeserver allows the first cross-signing key upload without
+/// User-Interactive Auth (Synapse's MSC3967). Best-effort: on failure this logs
+/// and returns — the client still works, the shield just remains.
+pub async fn ensure_cross_signing(client: &Client, who: &str) {
+    if let Err(e) = client
+        .encryption()
+        .bootstrap_cross_signing_if_needed(None)
+        .await
+    {
+        tracing::warn!("cross-signing bootstrap for {who} skipped: {e}");
+        return;
+    }
+    match client.encryption().get_own_device().await {
+        Ok(Some(device)) if !device.is_verified_with_cross_signing() => {
+            if let Err(e) = device.verify().await {
+                tracing::warn!("self-signing device for {who} failed: {e}");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("loading own device for {who} failed: {e}"),
+    }
+}
+
 /// Send a plain-text message into a joined room identified by `room_id`.
 ///
 /// Plain text (not Markdown/HTML) is deliberate: webhook content is untrusted

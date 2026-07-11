@@ -62,6 +62,11 @@ async fn main() -> Result<()> {
     }
     bot::join_pending_invites(&client).await;
 
+    // Self-sign this device via cross-signing so the command bot's own DM
+    // replies aren't flagged "encrypted by a device not verified by its owner"
+    // (mirrors what each per-hook client does for itself).
+    hook_core::client::ensure_cross_signing(&client, &cfg.user_id).await;
+
     // Continuous sync in the background. RETRY on error — a transient homeserver
     // outage (e.g. Synapse restarting to pick up config) must NOT take hookd
     // down. This loop never returns, so it can't trigger a shutdown.
