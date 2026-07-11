@@ -47,6 +47,42 @@ pub async fn connect(config: &Config) -> Result<Client> {
     Ok(client)
 }
 
+/// Restore an arbitrary session into a fresh matrix-sdk client with a persistent
+/// SQLite crypto/state store at `store_path`. Used for per-hook E2EE clients
+/// (whose sessions come from `m.login.application_service`).
+pub async fn restore(
+    homeserver: &str,
+    user_id: &str,
+    device_id: &str,
+    access_token: &str,
+    store_path: &std::path::Path,
+) -> Result<Client> {
+    let _ = std::fs::create_dir_all(store_path);
+    let client = Client::builder()
+        .homeserver_url(homeserver)
+        .sqlite_store(store_path, None)
+        .build()
+        .await
+        .context("building matrix client")?;
+    let uid = user_id
+        .parse()
+        .with_context(|| format!("invalid user id {user_id:?}"))?;
+    client
+        .restore_session(MatrixSession {
+            meta: SessionMeta {
+                user_id: uid,
+                device_id: device_id.into(),
+            },
+            tokens: SessionTokens {
+                access_token: access_token.to_owned(),
+                refresh_token: None,
+            },
+        })
+        .await
+        .context("restoring session")?;
+    Ok(client)
+}
+
 /// Send a plain-text message into a joined room identified by `room_id`.
 ///
 /// Plain text (not Markdown/HTML) is deliberate: webhook content is untrusted

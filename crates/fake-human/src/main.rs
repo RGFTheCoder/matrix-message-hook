@@ -68,8 +68,13 @@ async fn main() -> Result<()> {
     let mxid = format!("@{localpart}:{server_name}");
     let password = admin::random_secret(48);
     tracing::info!("registering throwaway {mxid}");
-    let secret = admin::read_registration_secret(&sops_file)
-        .context("reading registration_shared_secret")?;
+    // Prefer an env-provided shared secret (handy for local test harnesses);
+    // fall back to reading it from the nix-sys sops file.
+    let secret = match std::env::var("REGISTRATION_SHARED_SECRET") {
+        Ok(s) if !s.is_empty() => s,
+        _ => admin::read_registration_secret(&sops_file)
+            .context("reading registration_shared_secret")?,
+    };
     admin::register_shared_secret(&admin_hs, &secret, &localpart, &password, false)
         .await
         .context("registering test account")?;
@@ -164,6 +169,15 @@ async fn run_checks(
 
     // Give the bot a moment to auto-join and exchange keys.
     tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Enable E2EE on the room (matrixHook only serves encrypted rooms). Idempotent.
+    if !room.encryption_state().is_encrypted() {
+        room.enable_encryption()
+            .await
+            .context("enabling room encryption")?;
+        tracing::info!("enabled encryption on {}", room.room_id());
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
 
     // Ask the bot to create a hook.
     let hook_name = format!("selftest-{nonce}");

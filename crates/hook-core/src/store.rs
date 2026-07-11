@@ -22,7 +22,6 @@ use surrealdb::engine::any::{self, Any};
 use surrealdb::opt::auth::Root;
 use surrealdb::types::SurrealValue;
 
-use crate::id;
 
 /// The default SurrealDB namespace matrixHook uses on the shared server.
 pub const NAMESPACE: &str = "matrixHook";
@@ -39,9 +38,13 @@ pub struct Hook {
     pub owner: String,
     /// Room the hook posts into (where it was created).
     pub room_id: String,
-    /// Localpart of the per-hook virtual (appservice) user that authors
-    /// deliveries, e.g. `hook_alerts_9k3m…`.
+    /// Localpart of the per-hook virtual user that authors deliveries, e.g.
+    /// `hook_alerts_9k3m…`.
     pub sender: String,
+    /// Device id of the per-hook user's E2EE session (empty until provisioned).
+    pub device_id: String,
+    /// Access token of the per-hook user's session (empty until provisioned).
+    pub access_token: String,
 }
 
 /// SurrealValue view of a stored `hook` row. `hid` is selected explicitly so it
@@ -53,6 +56,8 @@ struct HookRow {
     owner: String,
     room_id: String,
     sender: String,
+    device_id: String,
+    access_token: String,
 }
 
 impl From<HookRow> for Hook {
@@ -63,6 +68,8 @@ impl From<HookRow> for Hook {
             owner: r.owner,
             room_id: r.room_id,
             sender: r.sender,
+            device_id: r.device_id,
+            access_token: r.access_token,
         }
     }
 }
@@ -159,43 +166,96 @@ impl Store {
         Ok(())
     }
 
-    /// Define the `hook` table + unique index on `hid` (idempotent).
+    /// Define the `hook` table (schemaful) + indexes (idempotent). The schema is
+    /// now stable, so we type every field and index the lookup columns:
+    /// `hid` (the webhook secret, unique) and `owner` (for `list_by_owner`).
     async fn migrate(&self) -> Result<()> {
         self.db
             .query(
-                "DEFINE TABLE IF NOT EXISTS hook SCHEMALESS;
-                 DEFINE INDEX IF NOT EXISTS hook_hid ON TABLE hook COLUMNS hid UNIQUE;",
+                "DEFINE TABLE IF NOT EXISTS hook SCHEMAFULL;
+                 DEFINE FIELD IF NOT EXISTS hid ON hook TYPE string;
+                 DEFINE FIELD IF NOT EXISTS name ON hook TYPE string;
+                 DEFINE FIELD IF NOT EXISTS owner ON hook TYPE string;
+                 DEFINE FIELD IF NOT EXISTS room_id ON hook TYPE string;
+                 DEFINE FIELD IF NOT EXISTS sender ON hook TYPE string;
+                 DEFINE FIELD IF NOT EXISTS device_id ON hook TYPE string;
+                 DEFINE FIELD IF NOT EXISTS access_token ON hook TYPE string;
+                 DEFINE FIELD IF NOT EXISTS created_at ON hook TYPE datetime;
+                 DEFINE INDEX IF NOT EXISTS hook_hid ON hook COLUMNS hid UNIQUE;
+                 DEFINE INDEX IF NOT EXISTS hook_owner ON hook COLUMNS owner;",
             )
             .await?
             .check()?;
         Ok(())
     }
 
-    /// Create a new hook owned by `owner`, bound to `room_id`, returning it with
-    /// its freshly minted short id and per-hook virtual sender localpart.
-    pub async fn create_hook(&self, name: &str, owner: &str, room_id: &str) -> Result<Hook> {
+    /// Create a new hook owned by `owner`, bound to `room_id`, with an already
+    /// provisioned per-hook session (`sender` localpart, `device_id`, `token`).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_hook(
+        &self,
+        id: &str,
+        name: &str,
+        owner: &str,
+        room_id: &str,
+        sender: &str,
+        device_id: &str,
+        access_token: &str,
+    ) -> Result<Hook> {
         self.select().await?;
-        let id = id::hook_id();
-        let sender = id::virtual_localpart(name, &id);
         self.db
             .query(
                 "CREATE hook SET hid = $hid, name = $name, owner = $owner,
-                     room_id = $room_id, sender = $sender, created_at = time::now()",
+                     room_id = $room_id, sender = $sender, device_id = $device_id,
+                     access_token = $access_token, created_at = time::now()",
             )
-            .bind(("hid", id.clone()))
+            .bind(("hid", id.to_owned()))
             .bind(("name", name.to_owned()))
             .bind(("owner", owner.to_owned()))
             .bind(("room_id", room_id.to_owned()))
-            .bind(("sender", sender.clone()))
+            .bind(("sender", sender.to_owned()))
+            .bind(("device_id", device_id.to_owned()))
+            .bind(("access_token", access_token.to_owned()))
             .await?
             .check()?;
         Ok(Hook {
-            id,
+            id: id.to_owned(),
             name: name.to_owned(),
             owner: owner.to_owned(),
             room_id: room_id.to_owned(),
-            sender,
+            sender: sender.to_owned(),
+            device_id: device_id.to_owned(),
+            access_token: access_token.to_owned(),
         })
+    }
+
+    /// Replace a hook's session (device id + access token). Used when a fresh
+    /// device must be minted because the persistent crypto store was lost.
+    pub async fn set_session(&self, id: &str, device_id: &str, access_token: &str) -> Result<()> {
+        self.select().await?;
+        self.db
+            .query("UPDATE hook SET device_id = $device_id, access_token = $access_token WHERE hid = $hid")
+            .bind(("hid", id.to_owned()))
+            .bind(("device_id", device_id.to_owned()))
+            .bind(("access_token", access_token.to_owned()))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    /// List every hook (across all owners) — used at startup to bring up the
+    /// per-hook clients.
+    pub async fn all_hooks(&self) -> Result<Vec<Hook>> {
+        self.select().await?;
+        let mut res = self
+            .db
+            .query(
+                "SELECT hid, name, owner, room_id, sender, device_id, access_token, created_at
+                     FROM hook ORDER BY created_at",
+            )
+            .await?;
+        let rows: Vec<HookRow> = res.take(0)?;
+        Ok(rows.into_iter().map(Hook::from).collect())
     }
 
     /// Look up a hook by its id.
@@ -204,7 +264,7 @@ impl Store {
         let mut res = self
             .db
             .query(
-                "SELECT hid, name, owner, room_id, sender FROM hook
+                "SELECT hid, name, owner, room_id, sender, device_id, access_token FROM hook
                      WHERE hid = $hid LIMIT 1",
             )
             .bind(("hid", id.to_owned()))
@@ -219,8 +279,8 @@ impl Store {
         let mut res = self
             .db
             .query(
-                "SELECT hid, name, owner, room_id, sender, created_at FROM hook
-                     WHERE owner = $owner ORDER BY created_at",
+                "SELECT hid, name, owner, room_id, sender, device_id, access_token, created_at
+                     FROM hook WHERE owner = $owner ORDER BY created_at",
             )
             .bind(("owner", owner.to_owned()))
             .await?;
@@ -288,26 +348,34 @@ mod tests {
         assert!(store.get_hook("nope").await.unwrap().is_none());
 
         let h = store
-            .create_hook("alerts", "@alice:s", "!room:s")
+            .create_hook("id1", "alerts", "@alice:s", "!room:s", "hook_alerts_id1", "DEV1", "tok1")
             .await
             .unwrap();
         assert_eq!(h.name, "alerts");
         assert_eq!(h.owner, "@alice:s");
         assert_eq!(h.room_id, "!room:s");
-        assert!(!h.id.is_empty());
-        assert_eq!(h.sender, format!("hook_alerts_{}", h.id));
+        assert_eq!(h.id, "id1");
+        assert_eq!(h.sender, "hook_alerts_id1");
+        assert_eq!(h.device_id, "DEV1");
+        assert_eq!(h.access_token, "tok1");
 
         // Round-trips by id.
         let got = store.get_hook(&h.id).await.unwrap().unwrap();
         assert_eq!(got, h);
 
+        // set_session replaces device + token.
+        store.set_session("id1", "DEV2", "tok2").await.unwrap();
+        let got = store.get_hook("id1").await.unwrap().unwrap();
+        assert_eq!(got.device_id, "DEV2");
+        assert_eq!(got.access_token, "tok2");
+
         // A second hook for the same owner + one for another owner.
         let h2 = store
-            .create_hook("deploys", "@alice:s", "!other:s")
+            .create_hook("id2", "deploys", "@alice:s", "!other:s", "hook_deploys_id2", "D", "t")
             .await
             .unwrap();
         store
-            .create_hook("bob-hook", "@bob:s", "!bobroom:s")
+            .create_hook("id3", "bob-hook", "@bob:s", "!bobroom:s", "hook_bobhook_id3", "D", "t")
             .await
             .unwrap();
 
@@ -315,6 +383,7 @@ mod tests {
         assert_eq!(alice.len(), 2);
         assert_eq!(alice[0].id, h.id);
         assert_eq!(alice[1].id, h2.id);
+        assert_eq!(store.all_hooks().await.unwrap().len(), 3);
 
         // Non-owner cannot delete.
         assert!(!store.delete_hook(&h.id, "@bob:s").await.unwrap());

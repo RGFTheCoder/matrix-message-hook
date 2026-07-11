@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use hook_core::command::{Command, parse_command, webhook_url};
-use hook_core::{AppService, Config, Hook, Store};
+use hook_core::{AppService, Config, Hook, Store, id};
 use matrix_sdk::event_handler::Ctx;
 use matrix_sdk::ruma::UserId;
 use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
@@ -17,7 +17,7 @@ use matrix_sdk::ruma::events::room::message::{
 };
 use matrix_sdk::{Client, Room};
 
-use crate::sender;
+use crate::clients::HookClients;
 
 /// Max accepted hook name length (defensive; names are user input).
 const NAME_MAX: usize = 100;
@@ -30,14 +30,22 @@ const MAX_HOOKS_PER_USER: usize = 50;
 struct BotState {
     store: Store,
     appservice: AppService,
+    clients: HookClients,
     cfg: Arc<Config>,
 }
 
 /// Install the message handler on `client`.
-pub fn install(client: &Client, store: Store, appservice: AppService, cfg: Arc<Config>) {
+pub fn install(
+    client: &Client,
+    store: Store,
+    appservice: AppService,
+    clients: HookClients,
+    cfg: Arc<Config>,
+) {
     client.add_event_handler_context(BotState {
         store,
         appservice,
+        clients,
         cfg,
     });
     client.add_event_handler(on_message);
@@ -73,7 +81,7 @@ async fn on_message(
     let cmd = parse_command(&text.body);
     tracing::info!(%sender, %room_id, ?cmd, "handling command");
 
-    let reply = handle_command(&state, &client, cmd, &sender, &room_id).await;
+    let reply = handle_command(&state, &room, cmd, &sender, &room_id).await;
     if let Err(e) = room
         .send(RoomMessageEventContent::text_markdown(reply))
         .await
@@ -105,10 +113,10 @@ async fn is_direct_chat(room: &Room, me: Option<&UserId>) -> bool {
     }
 }
 
-/// Execute a parsed command against the store, returning a Markdown reply.
+/// Execute a parsed command, returning a Markdown reply.
 async fn handle_command(
     state: &BotState,
-    client: &Client,
+    room: &Room,
     cmd: Command,
     sender: &str,
     room_id: &str,
@@ -120,6 +128,13 @@ async fn handle_command(
             let name = name.trim();
             if name.len() > NAME_MAX {
                 return format!("Name is too long (max {NAME_MAX} characters).");
+            }
+            // Never deliver plaintext: require the room to be encrypted.
+            if !room.encryption_state().is_encrypted() {
+                return "This room isn't end-to-end encrypted, and matrixHook only \
+                        delivers encrypted alerts. Enable encryption for this chat \
+                        (Room settings → Security) and try again."
+                    .to_owned();
             }
             match store.list_by_owner(sender).await {
                 Ok(existing) if existing.len() >= MAX_HOOKS_PER_USER => {
@@ -134,21 +149,32 @@ async fn handle_command(
                     return "Sorry, I couldn't create that hook (internal error).".to_owned();
                 }
             }
-            let hook = match store.create_hook(name, sender, room_id).await {
+            let hid = id::hook_id();
+            let localpart = id::virtual_localpart(name, &hid);
+            // Ensure the virtual user exists (idempotent); its session is minted
+            // by the per-hook client on provision.
+            if let Err(e) = state.appservice.register(&localpart).await {
+                tracing::warn!("register {localpart} failed: {e}");
+                return "Sorry, I couldn't create that hook (internal error).".to_owned();
+            }
+            let hook = match store
+                .create_hook(&hid, name, sender, room_id, &localpart, "", "")
+                .await
+            {
                 Ok(hook) => hook,
                 Err(e) => {
                     tracing::warn!("create_hook failed: {e}");
                     return "Sorry, I couldn't create that hook (internal error).".to_owned();
                 }
             };
-            // Provision the per-hook virtual user (register, name it, get it into
-            // this room) so deliveries post as a distinct sender.
-            if let Err(e) = sender::provision(client, &state.appservice, &hook).await {
-                tracing::warn!("provisioning virtual user {} failed: {e}", hook.sender);
+            // Provision the per-hook E2EE client: mint its session, join this
+            // (encrypted) room, and become send-ready.
+            if let Err(e) = state.clients.provision(&hook).await {
+                tracing::warn!("provisioning E2EE client for {} failed: {e}", hook.sender);
+                let _ = store.delete_hook(&hook.id, sender).await;
                 return format!(
-                    "Created hook **{name}** (`{}`), but I couldn't set up its \
-                     posting identity — deliveries may not appear. Please try again.",
-                    hook.id
+                    "Created hook **{name}** but couldn't set up its encrypted \
+                     sender, so I rolled it back. Please try again."
                 );
             }
             reply_created(&hook, cfg)
@@ -170,11 +196,22 @@ async fn handle_command(
                 "Sorry, I couldn't list your hooks (internal error).".to_owned()
             }
         },
-        Command::Delete(id) => match store.delete_hook(&id, sender).await {
-            Ok(true) => format!("🗑️ Deleted hook `{id}`."),
-            Ok(false) => format!("No hook `{id}` owned by you."),
+        Command::Delete(id) => match store.get_hook(&id).await {
+            Ok(Some(hook)) if hook.owner == sender => {
+                // Tear down the E2EE client (leave room, log out, drop store)
+                // before removing the record.
+                state.clients.remove(&hook).await;
+                match store.delete_hook(&id, sender).await {
+                    Ok(_) => format!("🗑️ Deleted hook `{id}`."),
+                    Err(e) => {
+                        tracing::warn!("delete_hook failed: {e}");
+                        "Sorry, I couldn't delete that hook (internal error).".to_owned()
+                    }
+                }
+            }
+            Ok(_) => format!("No hook `{id}` owned by you."),
             Err(e) => {
-                tracing::warn!("delete_hook failed: {e}");
+                tracing::warn!("get_hook (delete) failed: {e}");
                 "Sorry, I couldn't delete that hook (internal error).".to_owned()
             }
         },
@@ -190,11 +227,10 @@ fn reply_created(hook: &Hook, cfg: &Config) -> String {
         "✅ Created hook **{name}**.\n\n\
          - id: `{id}`\n\
          - URL: `{url}`\n\n\
-         Trigger it (posts appear in *this* room as **{name}**):\n\
+         Trigger it (posts appear in *this* room as **{name}**, end-to-end encrypted):\n\
          - `curl -X POST {url} -d 'your message here'`\n\
          - or GET `{url}/your%20short%20message`\n\n\
-         ⚠️ Anyone with this URL can post here — keep it secret. Deliveries are \
-         **not end-to-end encrypted**, so avoid sending anything sensitive.",
+         ⚠️ Anyone with this URL can post here — keep it secret.",
         name = hook.name,
         id = hook.id,
     )

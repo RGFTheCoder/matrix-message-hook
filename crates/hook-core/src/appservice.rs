@@ -29,6 +29,17 @@ struct MatrixErr {
     errcode: String,
 }
 
+/// A real device session for a virtual user (from `m.login.application_service`).
+#[derive(Clone, Debug, Deserialize)]
+pub struct Session {
+    /// Full user id.
+    pub user_id: String,
+    /// Device id created by the login.
+    pub device_id: String,
+    /// Access token bound to `device_id`.
+    pub access_token: String,
+}
+
 impl AppService {
     /// Build an appservice client. `homeserver` is the client-server API base
     /// (e.g. `http://10.1.1.30:8008`), `server_name` the domain part of MXIDs
@@ -144,6 +155,31 @@ impl AppService {
             event_id: String,
         }
         Ok(resp.json::<Sent>().await?.event_id)
+    }
+
+    /// Obtain a real device session for a namespaced virtual user via the
+    /// `m.login.application_service` login type (authenticated with the
+    /// `as_token`). This yields a normal client session — token + device — that
+    /// can then drive full E2EE, without needing MSC3202 or the registration
+    /// shared secret.
+    pub async fn login(&self, localpart: &str) -> Result<Session> {
+        let url = format!("{}/_matrix/client/v3/login", self.homeserver);
+        let resp = self
+            .http
+            .post(url)
+            .bearer_auth(&self.as_token)
+            .json(&serde_json::json!({
+                "type": "m.login.application_service",
+                "identifier": { "type": "m.id.user", "user": localpart },
+            }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            bail!("appservice login for {localpart} failed ({status}): {text}");
+        }
+        Ok(resp.json::<Session>().await?)
     }
 }
 

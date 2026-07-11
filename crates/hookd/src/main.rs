@@ -14,7 +14,7 @@
 #![recursion_limit = "512"]
 
 mod bot;
-mod sender;
+mod clients;
 mod web;
 
 use std::sync::Arc;
@@ -50,10 +50,18 @@ async fn main() -> Result<()> {
         .await
         .context("connecting matrix client")?;
     let appservice = AppService::new(&cfg.homeserver, &cfg.as_token, &cfg.server_name);
+    let hook_clients =
+        clients::HookClients::new(store.clone(), appservice.clone(), cfg.clone(), client.clone());
 
     // Install handlers, then do one initial sync so room state (and any pending
     // invites) are processed before we start serving webhooks.
-    bot::install(&client, store.clone(), appservice.clone(), cfg.clone());
+    bot::install(
+        &client,
+        store.clone(),
+        appservice.clone(),
+        hook_clients.clone(),
+        cfg.clone(),
+    );
     bot::auto_join_on_invite(&client);
     if let Err(e) = client.sync_once(SyncSettings::default()).await {
         tracing::warn!("initial sync failed: {e}");
@@ -68,8 +76,11 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Bring up the per-hook E2EE clients (each spawned; non-blocking).
+    hook_clients.start_all().await;
+
     // Serve the webhost on the main task.
-    let app = web::router(web::WebState::new(store, client, appservice, cfg.clone()));
+    let app = web::router(web::WebState::new(store, hook_clients, cfg.clone()));
     let listener = TcpListener::bind(&cfg.bind_addr)
         .await
         .with_context(|| format!("binding {}", cfg.bind_addr))?;

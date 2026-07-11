@@ -83,7 +83,7 @@ async fn client_against_server_roundtrip() {
 
     // Full CRUD roundtrip against the real 3.x server.
     let h = store
-        .create_hook("live-alerts", "@alice:s", "!room:s")
+        .create_hook("liveid1", "live-alerts", "@alice:s", "!room:s", "hook_livealerts_liveid1", "D", "t")
         .await
         .expect("create_hook");
     assert_eq!(h.name, "live-alerts");
@@ -93,7 +93,7 @@ async fn client_against_server_roundtrip() {
     assert_eq!(got, h);
 
     store
-        .create_hook("live-deploys", "@alice:s", "!other:s")
+        .create_hook("liveid2", "live-deploys", "@alice:s", "!other:s", "hook_livedeploys_liveid2", "D", "t")
         .await
         .expect("second create");
     let listed = store.list_by_owner("@alice:s").await.expect("list");
