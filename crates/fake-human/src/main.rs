@@ -101,19 +101,22 @@ async fn main() -> Result<()> {
         .await
         .context("restoring session")?;
 
-    // 3. Watch for messages from the bot.
+    // 3. Watch for messages in the room. Collect from ALL senders: the bot's
+    //    reply (the hook id) comes from @matrixhook, but webhook deliveries come
+    //    from the per-hook virtual @hook_* user. Skip our own messages.
+    let me = user_id.clone();
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
-    client.add_event_handler_context(WatchCtx {
-        target: target.clone(),
-        seen: seen.clone(),
-    });
+    client.add_event_handler_context(WatchCtx { seen: seen.clone() });
     client.add_event_handler(
-        |ev: OriginalSyncRoomMessageEvent, ctx: Ctx<WatchCtx>| async move {
-            if ev.sender != ctx.target {
-                return;
-            }
-            if let MessageType::Text(t) = ev.content.msgtype {
-                ctx.seen.lock().await.push(t.body);
+        move |ev: OriginalSyncRoomMessageEvent, ctx: Ctx<WatchCtx>| {
+            let me = me.clone();
+            async move {
+                if ev.sender == me {
+                    return;
+                }
+                if let MessageType::Text(t) = ev.content.msgtype {
+                    ctx.seen.lock().await.push(t.body);
+                }
             }
         },
     );
@@ -211,7 +214,6 @@ async fn run_checks(
 /// Context for the message watcher.
 #[derive(Clone)]
 struct WatchCtx {
-    target: OwnedUserId,
     seen: Seen,
 }
 
@@ -248,9 +250,9 @@ async fn wait_for_map<T>(
     }
 }
 
-/// Extract the hook UUID from a bot reply of the form ``… UUID: `<uuid>` …``.
+/// Extract the hook id from a bot reply of the form ``… id: `<id>` …``.
 fn extract_uuid(body: &str) -> Option<String> {
-    let after = body.split("UUID: `").nth(1)?;
+    let after = body.split("id: `").nth(1)?;
     let uuid = after.split('`').next()?.trim();
     if uuid.is_empty() {
         None

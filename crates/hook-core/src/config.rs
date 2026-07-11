@@ -43,15 +43,20 @@ pub struct Config {
     /// Public base URL the webhost is reached at, used to build hook URLs handed
     /// back to users (e.g. `https://matrixHook.damastacoda.dev`).
     pub public_base_url: String,
+    /// Appservice `as_token`: authorizes posting as the per-hook virtual
+    /// `@hook_*` users (must match the Synapse appservice registration).
+    pub as_token: String,
+    /// Server name (the domain part of MXIDs), e.g. `damastacoda.dev`.
+    pub server_name: String,
 }
 
 impl Config {
     /// Load config from the environment, first sourcing a `.env` if present.
     ///
     /// Required: `MATRIX_HOMESERVER`, `MATRIX_USER`, `MATRIX_ACCESS_TOKEN`,
-    /// `MATRIX_DEVICE_ID`, `SURREAL_USER`, `SURREAL_PASS`. Optional (with
-    /// defaults): `MATRIX_STORE_PATH`, `SURREAL_URL`, `SURREAL_NS`,
-    /// `SURREAL_DB`, `HOOK_BIND_ADDR`, `HOOK_PUBLIC_BASE_URL`.
+    /// `MATRIX_DEVICE_ID`, `SURREAL_USER`, `SURREAL_PASS`, `AS_TOKEN`. Optional
+    /// (with defaults): `MATRIX_STORE_PATH`, `SURREAL_URL`, `SURREAL_NS`,
+    /// `SURREAL_DB`, `HOOK_BIND_ADDR`, `HOOK_PUBLIC_BASE_URL`, `SERVER_NAME`.
     pub fn from_env() -> Result<Self> {
         let _ = dotenvy::dotenv();
         Ok(Self {
@@ -71,6 +76,8 @@ impl Config {
             bind_addr: opt("HOOK_BIND_ADDR").unwrap_or_else(|| "127.0.0.1:8480".to_owned()),
             public_base_url: opt("HOOK_PUBLIC_BASE_URL")
                 .unwrap_or_else(|| "https://matrixHook.damastacoda.dev".to_owned()),
+            as_token: req("AS_TOKEN")?,
+            server_name: opt("SERVER_NAME").unwrap_or_else(|| "damastacoda.dev".to_owned()),
         })
     }
 }

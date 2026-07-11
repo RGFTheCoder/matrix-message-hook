@@ -18,7 +18,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use hook_core::{Config, Store};
+use hook_core::{AppService, Config, Store};
 use matrix_sdk::Client;
 use tokio::sync::Semaphore;
 
@@ -35,16 +35,18 @@ const MAX_INFLIGHT_SENDS: usize = 8;
 pub struct WebState {
     store: Store,
     client: Client,
+    appservice: AppService,
     cfg: Arc<Config>,
     sem: Arc<Semaphore>,
 }
 
 impl WebState {
-    /// Build web state from the shared store, matrix client, and config.
-    pub fn new(store: Store, client: Client, cfg: Arc<Config>) -> Self {
+    /// Build web state from the shared store, matrix client, appservice, config.
+    pub fn new(store: Store, client: Client, appservice: AppService, cfg: Arc<Config>) -> Self {
         Self {
             store,
             client,
+            appservice,
             cfg,
             sem: Arc::new(Semaphore::new(MAX_INFLIGHT_SENDS)),
         }
@@ -125,13 +127,11 @@ async fn deliver(st: &WebState, uuid: &str, raw: String) -> (StatusCode, String)
         }
     };
 
-    // Prefix with the hook name: the message is authored by the bot, so we make
-    // its webhook origin explicit rather than letting it impersonate the bot.
-    let body = format!("🪝 [{}] {}", hook.name, message);
-
-    // Bound concurrent sends. The permit is held until the send completes.
+    // Deliver as the hook's own virtual user (display name = the hook name), so
+    // each source appears as a distinct sender. Bound concurrent sends; the
+    // permit is held until the send completes.
     let _permit = st.sem.acquire().await.ok();
-    match hook_core::client::send_room_text(&st.client, &hook.room_id, &body).await {
+    match crate::sender::deliver(&st.client, &st.appservice, &hook, message).await {
         Ok(()) => (StatusCode::OK, "delivered\n".to_owned()),
         Err(e) => {
             tracing::warn!("delivery failed for hook {uuid}: {e}");

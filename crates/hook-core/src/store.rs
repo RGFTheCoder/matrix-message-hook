@@ -21,15 +21,17 @@ use surrealdb::Surreal;
 use surrealdb::engine::any::{self, Any};
 use surrealdb::opt::auth::Root;
 use surrealdb::types::SurrealValue;
-use uuid::Uuid;
+
+use crate::id;
 
 /// The default SurrealDB namespace matrixHook uses on the shared server.
 pub const NAMESPACE: &str = "matrixHook";
 
-/// A webhook: a UUID that delivers posted messages into `room_id`.
+/// A webhook: a short id that delivers posted messages into `room_id`, authored
+/// by the per-hook virtual (appservice) user `sender`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Hook {
-    /// The hook's UUID (the secret in its URL).
+    /// The hook's short id (the secret in its URL).
     pub id: String,
     /// Human-readable name chosen by the creator.
     pub name: String,
@@ -37,6 +39,9 @@ pub struct Hook {
     pub owner: String,
     /// Room the hook posts into (where it was created).
     pub room_id: String,
+    /// Localpart of the per-hook virtual (appservice) user that authors
+    /// deliveries, e.g. `hook_alerts_9k3m…`.
+    pub sender: String,
 }
 
 /// SurrealValue view of a stored `hook` row. `hid` is selected explicitly so it
@@ -47,6 +52,7 @@ struct HookRow {
     name: String,
     owner: String,
     room_id: String,
+    sender: String,
 }
 
 impl From<HookRow> for Hook {
@@ -56,6 +62,7 @@ impl From<HookRow> for Hook {
             name: r.name,
             owner: r.owner,
             room_id: r.room_id,
+            sender: r.sender,
         }
     }
 }
@@ -165,19 +172,21 @@ impl Store {
     }
 
     /// Create a new hook owned by `owner`, bound to `room_id`, returning it with
-    /// its freshly minted UUID.
+    /// its freshly minted short id and per-hook virtual sender localpart.
     pub async fn create_hook(&self, name: &str, owner: &str, room_id: &str) -> Result<Hook> {
         self.select().await?;
-        let id = Uuid::new_v4().to_string();
+        let id = id::hook_id();
+        let sender = id::virtual_localpart(name, &id);
         self.db
             .query(
                 "CREATE hook SET hid = $hid, name = $name, owner = $owner,
-                     room_id = $room_id, created_at = time::now()",
+                     room_id = $room_id, sender = $sender, created_at = time::now()",
             )
             .bind(("hid", id.clone()))
             .bind(("name", name.to_owned()))
             .bind(("owner", owner.to_owned()))
             .bind(("room_id", room_id.to_owned()))
+            .bind(("sender", sender.clone()))
             .await?
             .check()?;
         Ok(Hook {
@@ -185,15 +194,19 @@ impl Store {
             name: name.to_owned(),
             owner: owner.to_owned(),
             room_id: room_id.to_owned(),
+            sender,
         })
     }
 
-    /// Look up a hook by its UUID.
+    /// Look up a hook by its id.
     pub async fn get_hook(&self, id: &str) -> Result<Option<Hook>> {
         self.select().await?;
         let mut res = self
             .db
-            .query("SELECT hid, name, owner, room_id FROM hook WHERE hid = $hid LIMIT 1")
+            .query(
+                "SELECT hid, name, owner, room_id, sender FROM hook
+                     WHERE hid = $hid LIMIT 1",
+            )
             .bind(("hid", id.to_owned()))
             .await?;
         let rows: Vec<HookRow> = res.take(0)?;
@@ -206,7 +219,7 @@ impl Store {
         let mut res = self
             .db
             .query(
-                "SELECT hid, name, owner, room_id, created_at FROM hook
+                "SELECT hid, name, owner, room_id, sender, created_at FROM hook
                      WHERE owner = $owner ORDER BY created_at",
             )
             .bind(("owner", owner.to_owned()))
@@ -282,6 +295,7 @@ mod tests {
         assert_eq!(h.owner, "@alice:s");
         assert_eq!(h.room_id, "!room:s");
         assert!(!h.id.is_empty());
+        assert_eq!(h.sender, format!("hook_alerts_{}", h.id));
 
         // Round-trips by id.
         let got = store.get_hook(&h.id).await.unwrap().unwrap();

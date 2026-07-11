@@ -18,11 +18,14 @@
 //! no botmaster trust gate, since any user may create a hook.
 
 pub mod admin;
+pub mod appservice;
 pub mod client;
 pub mod command;
 pub mod config;
+pub mod id;
 pub mod store;
 
+pub use appservice::AppService;
 pub use command::{Command, webhook_url};
 pub use config::Config;
 pub use store::{Hook, Store};

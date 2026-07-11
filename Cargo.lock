@@ -2186,7 +2186,6 @@ dependencies = [
  "surrealdb",
  "tokio",
  "tracing",
- "uuid",
 ]
 
 [[package]]

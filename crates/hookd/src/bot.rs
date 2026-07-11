@@ -8,13 +8,16 @@
 use std::sync::Arc;
 
 use hook_core::command::{Command, parse_command, webhook_url};
-use hook_core::{Config, Store};
+use hook_core::{AppService, Config, Hook, Store};
 use matrix_sdk::event_handler::Ctx;
+use matrix_sdk::ruma::UserId;
 use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
 use matrix_sdk::ruma::events::room::message::{
     MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
 };
 use matrix_sdk::{Client, Room};
+
+use crate::sender;
 
 /// Max accepted hook name length (defensive; names are user input).
 const NAME_MAX: usize = 100;
@@ -26,12 +29,17 @@ const MAX_HOOKS_PER_USER: usize = 50;
 #[derive(Clone)]
 struct BotState {
     store: Store,
+    appservice: AppService,
     cfg: Arc<Config>,
 }
 
 /// Install the message handler on `client`.
-pub fn install(client: &Client, store: Store, cfg: Arc<Config>) {
-    client.add_event_handler_context(BotState { store, cfg });
+pub fn install(client: &Client, store: Store, appservice: AppService, cfg: Arc<Config>) {
+    client.add_event_handler_context(BotState {
+        store,
+        appservice,
+        cfg,
+    });
     client.add_event_handler(on_message);
 }
 
@@ -51,12 +59,11 @@ async fn on_message(
         return;
     };
 
-    // Only operate in one-to-one rooms (a DM: the bot + exactly one user).
-    // Ignore group rooms entirely so we never bind a hook to a shared room
-    // (which would expose its UUID to every member) nor spam a busy room with
-    // command replies. The bot may still auto-join a group invite, but it stays
-    // silent there.
-    if !is_direct_chat(&room).await {
+    // Only operate in one-to-one rooms (the bot + one human). Per-hook virtual
+    // `@hook_*` users may also be members, so they are excluded from the count;
+    // group rooms with more than one human are ignored so we never bind a hook
+    // to a shared room nor spam it with command replies.
+    if !is_direct_chat(&room, client.user_id()).await {
         tracing::debug!(room = %room.room_id(), "ignoring message in non-DM room");
         return;
     }
@@ -66,7 +73,7 @@ async fn on_message(
     let cmd = parse_command(&text.body);
     tracing::info!(%sender, %room_id, ?cmd, "handling command");
 
-    let reply = handle_command(cmd, &state.store, &state.cfg, &sender, &room_id).await;
+    let reply = handle_command(&state, &client, cmd, &sender, &room_id).await;
     if let Err(e) = room
         .send(RoomMessageEventContent::text_markdown(reply))
         .await
@@ -75,13 +82,22 @@ async fn on_message(
     }
 }
 
-/// Whether `room` is a one-to-one conversation (the bot plus at most one other
-/// member). Fetches the joined-member list so the count is accurate rather than
-/// relying on a possibly-stale summary. Fails closed (treats an error as "not a
-/// DM") so we never act on ambiguous rooms.
-async fn is_direct_chat(room: &Room) -> bool {
+/// Whether `room` is effectively a one-to-one conversation: at most one member
+/// that is neither the bot itself nor a per-hook virtual `@hook_*` user. Fetches
+/// the joined-member list for accuracy and fails closed (treats an error as "not
+/// a DM") so we never act on ambiguous rooms.
+async fn is_direct_chat(room: &Room, me: Option<&UserId>) -> bool {
     match room.members(matrix_sdk::RoomMemberships::JOIN).await {
-        Ok(members) => members.len() <= 2,
+        Ok(members) => {
+            let humans = members
+                .iter()
+                .filter(|m| {
+                    let uid = m.user_id();
+                    Some(uid) != me && !uid.localpart().starts_with("hook_")
+                })
+                .count();
+            humans <= 1
+        }
         Err(e) => {
             tracing::warn!("could not fetch members for {}: {e}", room.room_id());
             false
@@ -91,12 +107,14 @@ async fn is_direct_chat(room: &Room) -> bool {
 
 /// Execute a parsed command against the store, returning a Markdown reply.
 async fn handle_command(
+    state: &BotState,
+    client: &Client,
     cmd: Command,
-    store: &Store,
-    cfg: &Config,
     sender: &str,
     room_id: &str,
 ) -> String {
+    let store = &state.store;
+    let cfg = &state.cfg;
     match cmd {
         Command::New(name) => {
             let name = name.trim();
@@ -107,7 +125,7 @@ async fn handle_command(
                 Ok(existing) if existing.len() >= MAX_HOOKS_PER_USER => {
                     return format!(
                         "You already have {MAX_HOOKS_PER_USER} hooks (the maximum). \
-                         Delete one with `delete <uuid>` first."
+                         Delete one with `delete <id>` first."
                     );
                 }
                 Ok(_) => {}
@@ -116,25 +134,24 @@ async fn handle_command(
                     return "Sorry, I couldn't create that hook (internal error).".to_owned();
                 }
             }
-            match store.create_hook(name, sender, room_id).await {
-                Ok(hook) => {
-                    let url = webhook_url(&cfg.public_base_url, &hook.id);
-                    format!(
-                        "✅ Created hook **{name}**.\n\n\
-                         - UUID: `{id}`\n\
-                         - URL: `{url}`\n\n\
-                         Trigger it (messages appear in *this* room):\n\
-                         - `curl -X POST {url} -d 'your message here'`\n\
-                         - or GET `{url}/your%20short%20message`\n\n\
-                         Anyone with this URL can post here, so keep it secret.",
-                        id = hook.id,
-                    )
-                }
+            let hook = match store.create_hook(name, sender, room_id).await {
+                Ok(hook) => hook,
                 Err(e) => {
                     tracing::warn!("create_hook failed: {e}");
-                    "Sorry, I couldn't create that hook (internal error).".to_owned()
+                    return "Sorry, I couldn't create that hook (internal error).".to_owned();
                 }
+            };
+            // Provision the per-hook virtual user (register, name it, get it into
+            // this room) so deliveries post as a distinct sender.
+            if let Err(e) = sender::provision(client, &state.appservice, &hook).await {
+                tracing::warn!("provisioning virtual user {} failed: {e}", hook.sender);
+                return format!(
+                    "Created hook **{name}** (`{}`), but I couldn't set up its \
+                     posting identity — deliveries may not appear. Please try again.",
+                    hook.id
+                );
             }
+            reply_created(&hook, cfg)
         }
         Command::List => match store.list_by_owner(sender).await {
             Ok(hooks) if hooks.is_empty() => {
@@ -166,16 +183,34 @@ async fn handle_command(
     }
 }
 
+/// The reply sent after a hook is created.
+fn reply_created(hook: &Hook, cfg: &Config) -> String {
+    let url = webhook_url(&cfg.public_base_url, &hook.id);
+    format!(
+        "✅ Created hook **{name}**.\n\n\
+         - id: `{id}`\n\
+         - URL: `{url}`\n\n\
+         Trigger it (posts appear in *this* room as **{name}**):\n\
+         - `curl -X POST {url} -d 'your message here'`\n\
+         - or GET `{url}/your%20short%20message`\n\n\
+         ⚠️ Anyone with this URL can post here — keep it secret. Deliveries are \
+         **not end-to-end encrypted**, so avoid sending anything sensitive.",
+        name = hook.name,
+        id = hook.id,
+    )
+}
+
 /// Usage help shown for `help` / unknown input.
 fn help_text() -> String {
     "**matrixHook** — turn messages into Matrix posts.\n\n\
      Commands:\n\
      - `new <name>` — create a hook and get its URL\n\
      - `list` — list your hooks\n\
-     - `delete <uuid>` — delete a hook\n\
+     - `delete <id>` — delete a hook\n\
      - `help` — show this help\n\n\
      Once you have a hook URL, POST a body or GET `<url>/<message>` and it \
-     appears in the room where you created it."
+     appears in the room where you created it, posted by a per-hook user named \
+     after the hook."
         .to_owned()
 }
 

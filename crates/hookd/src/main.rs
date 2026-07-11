@@ -14,12 +14,13 @@
 #![recursion_limit = "512"]
 
 mod bot;
+mod sender;
 mod web;
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use hook_core::{Config, Store};
+use hook_core::{AppService, Config, Store};
 use matrix_sdk::config::SyncSettings;
 use tokio::net::TcpListener;
 
@@ -48,10 +49,11 @@ async fn main() -> Result<()> {
     let client = hook_core::client::connect(&cfg)
         .await
         .context("connecting matrix client")?;
+    let appservice = AppService::new(&cfg.homeserver, &cfg.as_token, &cfg.server_name);
 
     // Install handlers, then do one initial sync so room state (and any pending
     // invites) are processed before we start serving webhooks.
-    bot::install(&client, store.clone(), cfg.clone());
+    bot::install(&client, store.clone(), appservice.clone(), cfg.clone());
     bot::auto_join_on_invite(&client);
     if let Err(e) = client.sync_once(SyncSettings::default()).await {
         tracing::warn!("initial sync failed: {e}");
@@ -67,7 +69,7 @@ async fn main() -> Result<()> {
     });
 
     // Serve the webhost on the main task.
-    let app = web::router(web::WebState::new(store, client, cfg.clone()));
+    let app = web::router(web::WebState::new(store, client, appservice, cfg.clone()));
     let listener = TcpListener::bind(&cfg.bind_addr)
         .await
         .with_context(|| format!("binding {}", cfg.bind_addr))?;
