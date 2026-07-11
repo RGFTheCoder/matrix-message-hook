@@ -64,6 +64,8 @@ impl From<HookRow> for Hook {
 #[derive(Clone)]
 pub struct Store {
     db: Surreal<Any>,
+    namespace: String,
+    database: String,
 }
 
 impl Store {
@@ -126,9 +128,28 @@ impl Store {
             .context("defining database")?;
         db.use_db(database).await?;
 
-        let this = Self { db };
+        let this = Self {
+            db,
+            namespace: namespace.to_owned(),
+            database: database.to_owned(),
+        };
         this.migrate().await?;
         Ok(this)
+    }
+
+    /// Re-assert the namespace + database on the session before a query.
+    ///
+    /// SurrealDB's namespace/database selection is per-session state on the
+    /// shared connection; it can be lost (e.g. across a ws reconnect) leading to
+    /// "Specify a database to use" errors on a later query. Re-selecting before
+    /// each operation is cheap and keeps the store robust. (Same approach as the
+    /// sibling matrix-db crate.)
+    async fn select(&self) -> Result<()> {
+        self.db
+            .use_ns(self.namespace.clone())
+            .use_db(self.database.clone())
+            .await?;
+        Ok(())
     }
 
     /// Define the `hook` table + unique index on `hid` (idempotent).
@@ -146,6 +167,7 @@ impl Store {
     /// Create a new hook owned by `owner`, bound to `room_id`, returning it with
     /// its freshly minted UUID.
     pub async fn create_hook(&self, name: &str, owner: &str, room_id: &str) -> Result<Hook> {
+        self.select().await?;
         let id = Uuid::new_v4().to_string();
         self.db
             .query(
@@ -168,6 +190,7 @@ impl Store {
 
     /// Look up a hook by its UUID.
     pub async fn get_hook(&self, id: &str) -> Result<Option<Hook>> {
+        self.select().await?;
         let mut res = self
             .db
             .query("SELECT hid, name, owner, room_id FROM hook WHERE hid = $hid LIMIT 1")
@@ -179,6 +202,7 @@ impl Store {
 
     /// List every hook owned by `owner`, oldest first.
     pub async fn list_by_owner(&self, owner: &str) -> Result<Vec<Hook>> {
+        self.select().await?;
         let mut res = self
             .db
             .query(
@@ -197,6 +221,7 @@ impl Store {
         let existing = self.get_hook(id).await?;
         match existing {
             Some(h) if h.owner == owner => {
+                self.select().await?;
                 self.db
                     .query("DELETE hook WHERE hid = $hid AND owner = $owner")
                     .bind(("hid", id.to_owned()))
