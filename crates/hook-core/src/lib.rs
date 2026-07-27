@@ -22,6 +22,7 @@ pub mod appservice;
 pub mod client;
 pub mod command;
 pub mod config;
+pub mod embed;
 pub mod id;
 pub mod store;
 

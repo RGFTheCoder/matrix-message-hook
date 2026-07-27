@@ -48,6 +48,17 @@ pub struct Config {
     pub as_token: String,
     /// Server name (the domain part of MXIDs), e.g. `damastacoda.dev`.
     pub server_name: String,
+    /// Ollama server used to generate note embeddings for semantic search
+    /// (e.g. `http://10.1.2.30:11434`). Embedding is best-effort: if this is
+    /// unreachable, notes are still created/fetched normally, just without a
+    /// vector (so they exist but won't surface in search until backfilled).
+    pub ollama_url: String,
+    /// Ollama embedding model to use (must already be pulled on the server).
+    pub ollama_embed_model: String,
+    /// Output dimension of `ollama_embed_model` (e.g. 1024 for
+    /// `qwen3-embedding:0.6b`) — must match exactly, since SurrealDB's HNSW
+    /// index enforces vector dimension strictly at write time.
+    pub embed_dim: usize,
 }
 
 impl Config {
@@ -78,6 +89,12 @@ impl Config {
                 .unwrap_or_else(|| "https://matrixHook.damastacoda.dev".to_owned()),
             as_token: req("AS_TOKEN")?,
             server_name: opt("SERVER_NAME").unwrap_or_else(|| "damastacoda.dev".to_owned()),
+            ollama_url: opt("OLLAMA_URL").unwrap_or_else(|| "http://10.1.2.30:11434".to_owned()),
+            ollama_embed_model: opt("OLLAMA_EMBED_MODEL")
+                .unwrap_or_else(|| "qwen3-embedding:0.6b".to_owned()),
+            embed_dim: opt("OLLAMA_EMBED_DIM")
+                .map(|v| v.parse().unwrap_or(1024))
+                .unwrap_or(1024),
         })
     }
 }

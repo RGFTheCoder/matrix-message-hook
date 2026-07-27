@@ -156,6 +156,7 @@ async fn handle_command(
                 }
             }
             let hid = id::hook_id();
+            let public_id = id::gen(16);
             let localpart = id::virtual_localpart(name, &hid);
             // Ensure the virtual user exists (idempotent); its session is minted
             // by the per-hook client on provision.
@@ -164,7 +165,7 @@ async fn handle_command(
                 return "Sorry, I couldn't create that hook (internal error).".to_owned();
             }
             let hook = match store
-                .create_hook(&hid, name, sender, room_id, &localpart, "", "")
+                .create_hook(&hid, &public_id, name, sender, room_id, &localpart, "", "")
                 .await
             {
                 Ok(hook) => hook,
@@ -193,7 +194,10 @@ async fn handle_command(
                 let mut out = String::from("Your hooks:\n");
                 for h in hooks {
                     let url = webhook_url(&cfg.public_base_url, &h.id);
-                    out.push_str(&format!("- **{}** — `{}`\n  {}\n", h.name, h.id, url));
+                    out.push_str(&format!(
+                        "- **{}** — `{}` (public: `{}`)\n  {}\n",
+                        h.name, h.id, h.public_id, url
+                    ));
                 }
                 out
             }
@@ -232,12 +236,17 @@ fn reply_created(hook: &Hook, cfg: &Config) -> String {
     let onboard = hook_core::onboard_url(&cfg.public_base_url, &hook.id);
     format!(
         "✅ Created hook **{name}**.\n\n\
-         - id: `{id}`\n\
+         - id: `{id}` (secret — required to post, create notes, or read/search \
+         any note)\n\
+         - public id: `{public_id}` (share this if you want something to be \
+         able to *search or read* this hook's notes only — never grants \
+         posting/writing)\n\
          - URL: `{url}`\n\
          - How to use it: {onboard}\n\n\
-         ⚠️ Anyone with either URL can post here — keep them secret.",
+         ⚠️ Anyone with the id or URL can post here — keep them secret.",
         name = hook.name,
         id = hook.id,
+        public_id = hook.public_id,
     )
 }
 
@@ -251,7 +260,8 @@ fn help_text() -> String {
      - `help` — show this help\n\n\
      Once you have a hook URL, POST a body or GET `<url>/<message>` and it \
      appears in the room where you created it, posted by a per-hook user named \
-     after the hook."
+     after the hook. Each hook can also create/fetch/search small **notes** — \
+     fetch `<base>/onboard/<id>` for the full API."
         .to_owned()
 }
 

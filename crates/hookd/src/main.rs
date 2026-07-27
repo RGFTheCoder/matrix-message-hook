@@ -15,7 +15,6 @@
 
 mod bot;
 mod clients;
-mod notes;
 mod web;
 
 use std::sync::Arc;
@@ -41,6 +40,12 @@ async fn main() -> Result<()> {
     let store = connect_store_with_retry(&cfg)
         .await
         .context("connecting to SurrealDB")?;
+    // Fix up any hooks created before the public/private id split existed.
+    match store.backfill_public_ids().await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(n, "backfilled public ids for legacy hooks"),
+        Err(e) => tracing::warn!("backfilling public ids failed: {e}"),
+    }
     let client = hook_core::client::connect(&cfg)
         .await
         .context("connecting matrix client")?;
@@ -84,15 +89,26 @@ async fn main() -> Result<()> {
     // Bring up the per-hook E2EE clients (each spawned; non-blocking).
     hook_clients.start_all().await;
 
-    // Temporary notes live only in this process's memory; sweep expired ones
-    // periodically so memory doesn't grow unbounded from notes nobody ever
-    // fetches again (creation also enforces a per-hook cap as a second layer).
-    let temp_notes = notes::TempNotes::new();
-    temp_notes.spawn_sweeper(std::time::Duration::from_secs(5 * 60));
+    // Notes (temporary and persistent) live in SurrealDB now; sweep expired
+    // temporary ones periodically so they don't linger forever if nothing
+    // ever reads them (which would otherwise be the only place expiry is
+    // enforced — reads already lazily exclude expired notes on their own).
+    let sweep_store = store.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+        loop {
+            interval.tick().await;
+            match sweep_store.sweep_expired_notes().await {
+                Ok(0) => {}
+                Ok(n) => tracing::debug!(n, "swept expired notes"),
+                Err(e) => tracing::warn!("sweeping expired notes failed: {e}"),
+            }
+        }
+    });
 
     // Serve the webhost on the main task. Only a webhost failure ends the
     // process (with an error, so systemd's Restart=on-failure applies).
-    let app = web::router(web::WebState::new(store, hook_clients, cfg.clone(), temp_notes));
+    let app = web::router(web::WebState::new(store, hook_clients, cfg.clone()));
     let listener = TcpListener::bind(&cfg.bind_addr)
         .await
         .with_context(|| format!("binding {}", cfg.bind_addr))?;
@@ -115,6 +131,7 @@ async fn connect_store_with_retry(cfg: &Config) -> Result<Store> {
             &cfg.db_name,
             &cfg.surreal_user,
             &cfg.surreal_pass,
+            cfg.embed_dim,
         )
         .await
         {
