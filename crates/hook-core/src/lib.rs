@@ -26,6 +26,6 @@ pub mod id;
 pub mod store;
 
 pub use appservice::{AppService, Session};
-pub use command::{Command, webhook_url};
+pub use command::{Command, onboard_url, webhook_url};
 pub use config::Config;
 pub use store::{Hook, Store};

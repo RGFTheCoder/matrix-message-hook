@@ -4,6 +4,9 @@
 //! - `GET /` and `GET /health` — liveness.
 //! - `GET /<uuid>/<message>` — deliver a short message carried in the path.
 //! - `POST /<uuid>` — deliver a (longer) message carried in the request body.
+//! - `GET /onboard/<uuid>` — this hook's usage instructions as plain text, so
+//!   the creation reply can link to one URL instead of pasting curl examples
+//!   inline (handy for an agent to fetch on demand).
 //!
 //! The UUID is the only secret. Delivered messages are sent as plain text,
 //! prefixed with the hook's name, so a leaked URL cannot be used to post
@@ -57,6 +60,7 @@ pub fn router(state: WebState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/health", get(health))
+        .route("/onboard/{uuid}", get(onboard))
         .route("/{uuid}", get(get_no_message).post(post_body))
         .route("/{uuid}/{*message}", get(get_with_message))
         .with_state(state)
@@ -80,8 +84,41 @@ async fn health() -> impl IntoResponse {
 async fn get_no_message(Path(_uuid): Path<String>) -> impl IntoResponse {
     (
         StatusCode::BAD_REQUEST,
-        "provide a message: GET /<uuid>/<message> or POST /<uuid> with a body\n",
+        "provide a message: GET /<uuid>/<message> or POST /<uuid> with a body\n\
+         (or fetch /onboard/<uuid> for full usage instructions)\n",
     )
+}
+
+/// `GET /onboard/<uuid>`: this hook's usage instructions, as plain text. This
+/// is what the bot links to after creating a hook, instead of pasting the
+/// curl examples inline — one URL an agent or human can fetch on demand.
+async fn onboard(State(st): State<WebState>, Path(uuid): Path<String>) -> impl IntoResponse {
+    let hook = match st.store.get_hook(&uuid).await {
+        Ok(Some(h)) => h,
+        Ok(None) => return (StatusCode::NOT_FOUND, "unknown hook\n".to_owned()),
+        Err(e) => {
+            tracing::warn!("get_hook failed: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error\n".to_owned(),
+            );
+        }
+    };
+
+    let url = hook_core::webhook_url(&st.cfg.public_base_url, &hook.id);
+    let body = format!(
+        "matrixHook — hook **{name}**\n\n\
+         Trigger it (posts appear in the room where it was created, as \
+         **{name}**, end-to-end encrypted):\n\
+         - POST a body:  curl -X POST {url} -d 'your message here'\n\
+         - or GET with a short message in the path:  curl {url}/your%20short%20message\n\n\
+         Constraints:\n\
+         - message must be non-empty and under {max} bytes\n\
+         - anyone with this URL can post here — keep it secret\n",
+        name = hook.name,
+        max = MAX_MESSAGE_BYTES,
+    );
+    (StatusCode::OK, body)
 }
 
 /// `GET /<uuid>/<message>`: deliver the path-carried message.
@@ -138,3 +175,4 @@ async fn deliver(st: &WebState, uuid: &str, raw: String) -> (StatusCode, String)
         }
     }
 }
+

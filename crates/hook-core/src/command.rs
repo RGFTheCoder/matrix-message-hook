@@ -59,6 +59,14 @@ pub fn webhook_url(base: &str, uuid: &str) -> String {
     format!("{}/{}", base.trim_end_matches('/'), uuid)
 }
 
+/// Build the public onboarding URL for `uuid` under `base` (e.g.
+/// `https://matrixHook.damastacoda.dev/onboard/<uuid>`) — a single link an
+/// agent/human can fetch to get this specific hook's usage instructions,
+/// instead of needing them pasted inline every time.
+pub fn onboard_url(base: &str, uuid: &str) -> String {
+    format!("{}/onboard/{}", base.trim_end_matches('/'), uuid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +108,18 @@ mod tests {
         assert_eq!(
             webhook_url("https://h.example.dev", "uuid-1"),
             "https://h.example.dev/uuid-1"
+        );
+    }
+
+    #[test]
+    fn builds_onboard_url_trimming_trailing_slash() {
+        assert_eq!(
+            onboard_url("https://h.example.dev/", "uuid-1"),
+            "https://h.example.dev/onboard/uuid-1"
+        );
+        assert_eq!(
+            onboard_url("https://h.example.dev", "uuid-1"),
+            "https://h.example.dev/onboard/uuid-1"
         );
     }
 }

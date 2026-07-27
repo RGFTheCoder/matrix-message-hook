@@ -229,14 +229,13 @@ async fn handle_command(
 /// The reply sent after a hook is created.
 fn reply_created(hook: &Hook, cfg: &Config) -> String {
     let url = webhook_url(&cfg.public_base_url, &hook.id);
+    let onboard = hook_core::onboard_url(&cfg.public_base_url, &hook.id);
     format!(
         "✅ Created hook **{name}**.\n\n\
          - id: `{id}`\n\
-         - URL: `{url}`\n\n\
-         Trigger it (posts appear in *this* room as **{name}**, end-to-end encrypted):\n\
-         - `curl -X POST {url} -d 'your message here'`\n\
-         - or GET `{url}/your%20short%20message`\n\n\
-         ⚠️ Anyone with this URL can post here — keep it secret.",
+         - URL: `{url}`\n\
+         - How to use it: {onboard}\n\n\
+         ⚠️ Anyone with either URL can post here — keep them secret.",
         name = hook.name,
         id = hook.id,
     )
