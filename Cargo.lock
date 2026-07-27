@@ -2197,6 +2197,7 @@ dependencies = [
  "hook-core",
  "matrix-sdk",
  "my-workspace-hack",
+ "serde",
  "tokio",
  "tracing",
  "tracing-subscriber",

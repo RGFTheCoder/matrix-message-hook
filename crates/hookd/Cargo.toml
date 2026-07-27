@@ -10,6 +10,7 @@ axum = "0.8"
 hook-core = { path = "../hook-core" }
 matrix-sdk = { version = "0.18.0", features = ["markdown"] }
 my-workspace-hack = { version = "0.1", path = "../my-workspace-hack" }
+serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
