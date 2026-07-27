@@ -730,23 +730,33 @@ mod tests {
     #[tokio::test]
     async fn backfill_public_ids_fixes_up_legacy_rows() {
         let store = Store::memory().await.unwrap();
-        // Simulate a pre-migration row (no public_id) by writing directly.
-        store
-            .db
-            .query(
-                "CREATE hook SET hid = 'legacy1', name='n', owner='@a:s', room_id='!r:s',
-                     sender='s', device_id='d', access_token='t', created_at=time::now()",
-            )
-            .await
-            .unwrap()
-            .check()
-            .unwrap();
+        // Simulate two pre-migration rows (no public_id) by writing directly —
+        // tests that the UNIQUE index on public_id tolerates multiple `NONE`
+        // values simultaneously (standard SQL-null semantics: NULL/NONE never
+        // equals another NULL/NONE for uniqueness purposes), which matters
+        // since a real deployment could have more than one legacy hook.
+        for hid in ["legacy1", "legacy2"] {
+            store
+                .db
+                .query(format!(
+                    "CREATE hook SET hid = '{hid}', name='n', owner='@a:s', room_id='!r:s',
+                         sender='s', device_id='d', access_token='t', created_at=time::now()"
+                ))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
         assert_eq!(store.get_hook("legacy1").await.unwrap().unwrap().public_id, "");
+        assert_eq!(store.get_hook("legacy2").await.unwrap().unwrap().public_id, "");
 
         let fixed = store.backfill_public_ids().await.unwrap();
-        assert_eq!(fixed, 1);
-        let got = store.get_hook("legacy1").await.unwrap().unwrap();
-        assert!(!got.public_id.is_empty());
+        assert_eq!(fixed, 2);
+        let got1 = store.get_hook("legacy1").await.unwrap().unwrap();
+        let got2 = store.get_hook("legacy2").await.unwrap().unwrap();
+        assert!(!got1.public_id.is_empty());
+        assert!(!got2.public_id.is_empty());
+        assert_ne!(got1.public_id, got2.public_id);
 
         // Idempotent: nothing left to backfill.
         assert_eq!(store.backfill_public_ids().await.unwrap(), 0);
